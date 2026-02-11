@@ -1,0 +1,120 @@
+name: Project Management Automation
+
+on:
+  issues:
+    types:
+      - opened
+      - labeled
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-label PR by changed files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const labels = new Set();
+            for (const file of files) {
+              const path = file.filename;
+              if (path.startsWith('client/')) labels.add('frontend');
+              if (path.startsWith('server/')) labels.add('backend');
+              if (path.startsWith('shared/')) labels.add('shared');
+              if (path.startsWith('.github/')) labels.add('ci/cd');
+              if (path.startsWith('scripts/')) labels.add('automation');
+              if (path.endsWith('.test.ts') || path.endsWith('.spec.ts')) labels.add('tests');
+              if (path.includes('schema')) labels.add('database');
+            }
+
+            if (labels.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: [...labels]
+              });
+              console.log(`Added labels: ${[...labels].join(', ')}`);
+            }
+
+  auto-assign:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    steps:
+      - name: Auto-assign issue to creator
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const creator = context.payload.issue.user.login;
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              assignees: [creator]
+            });
+            console.log(`Assigned issue #${context.payload.issue.number} to ${creator}`);
+
+  link-pr-to-issue:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    steps:
+      - name: Link PR to referenced issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const title = context.payload.pull_request.title || '';
+            const branchName = context.payload.pull_request.head.ref || '';
+
+            // Extract issue numbers from PR body, title, and branch name
+            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+            const branchPattern = /issue-(\d+)/i;
+
+            const issueNumbers = new Set();
+
+            let match;
+            while ((match = issuePattern.exec(body)) !== null) {
+              issueNumbers.add(parseInt(match[1]));
+            }
+            while ((match = issuePattern.exec(title)) !== null) {
+              issueNumbers.add(parseInt(match[1]));
+            }
+
+            const branchMatch = branchName.match(branchPattern);
+            if (branchMatch) {
+              issueNumbers.add(parseInt(branchMatch[1]));
+            }
+
+            for (const issueNum of issueNumbers) {
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum,
+                  body: `Pull request #${context.payload.pull_request.number} has been opened referencing this issue.\n\n**PR:** ${context.payload.pull_request.html_url}`
+                });
+                console.log(`Linked PR to issue #${issueNum}`);
+              } catch (err) {
+                console.log(`Could not comment on issue #${issueNum}: ${err.message}`);
+              }
+            }

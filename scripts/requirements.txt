@@ -1,0 +1,9 @@
+# Python automation scripts dependencies
+# The scripts use only stdlib (urllib, json, subprocess) for zero-dependency operation.
+# Install these optional packages for enhanced functionality:
+
+# For .env file support (optional)
+python-dotenv==1.0.1
+
+# For richer CLI output (optional)
+rich==13.9.4
