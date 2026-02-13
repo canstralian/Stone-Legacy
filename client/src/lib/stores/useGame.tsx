@@ -56,6 +56,7 @@ interface GameState {
   addMunchiesEaten: (count: number) => void;
   addScreenshot: (url: string) => void;
   resetMunchieGame: () => void;
+  restart: () => void;
 }
 
 const DEFAULT_STRAINS: Strain[] = [
@@ -267,5 +268,14 @@ export const useGame = create<GameState>()(
       })),
 
     resetMunchieGame: () => set({ munchieScore: 0 }),
+
+    restart: () =>
+      set({
+        phase: "menu",
+        vibeLevel: 0,
+        tripIntensity: 0,
+        munchieScore: 0,
+        currentStrain: DEFAULT_STRAINS[0],
+      }),
   }))
 );
