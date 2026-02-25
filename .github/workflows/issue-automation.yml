@@ -1,0 +1,114 @@
+name: Issue Automation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan-todos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Scan for TODOs and FIXMEs
+        id: scan
+        run: |
+          # Scan source files for TODO/FIXME markers, excluding build artifacts and dependencies
+          TODOS=$(grep -rIn \
+            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
+            --include="*.py" --include="*.yml" --include="*.yaml" \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git \
+            --exclude-dir=.github \
+            -E "(TODO|FIXME|HACK|XXX):" . 2>/dev/null || true)
+
+          if [ -z "$TODOS" ]; then
+            echo "No TODO/FIXME markers found."
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "found=true" >> $GITHUB_OUTPUT
+            # Write to a temp file to handle multiline
+            echo "$TODOS" > /tmp/todos.txt
+            echo "Found $(echo "$TODOS" | wc -l) markers."
+          fi
+
+      - name: Create Issues for New Markers
+        if: steps.scan.outputs.found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const todos = fs.readFileSync('/tmp/todos.txt', 'utf8').trim().split('\n');
+
+            // Get existing open issues to avoid duplicates
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'automated,todo-scan',
+              per_page: 100
+            });
+            const existingTitles = new Set(existingIssues.data.map(i => i.title));
+
+            let created = 0;
+            const MAX_ISSUES = 5; // Rate limit: max 5 new issues per run
+
+            for (const line of todos) {
+              if (created >= MAX_ISSUES) {
+                console.log(`Reached max issue creation limit (${MAX_ISSUES}) for this run.`);
+                break;
+              }
+
+              const match = line.match(/^\.\/(.+?):(\d+):(.+)$/);
+              if (!match) continue;
+
+              const [, file, lineNum, content] = match;
+              const markerMatch = content.match(/(TODO|FIXME|HACK|XXX):\s*(.+)/);
+              if (!markerMatch) continue;
+
+              const [, marker, description] = markerMatch;
+              const title = `[${marker}] ${file}:${lineNum} - ${description.trim().substring(0, 80)}`;
+
+              if (existingTitles.has(title)) {
+                console.log(`Skipping duplicate: ${title}`);
+                continue;
+              }
+
+              const body = [
+                `## ${marker} Found in Code`,
+                '',
+                `**File:** \`${file}\``,
+                `**Line:** ${lineNum}`,
+                `**Marker:** ${marker}`,
+                '',
+                '```',
+                content.trim(),
+                '```',
+                '',
+                `*This issue was automatically created by the TODO scanner workflow.*`,
+                `*Commit: ${context.sha.substring(0, 7)}*`
+              ].join('\n');
+
+              try {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: title,
+                  body: body,
+                  labels: ['automated', 'todo-scan', marker.toLowerCase()]
+                });
+                created++;
+                console.log(`Created issue: ${title}`);
+              } catch (err) {
+                console.error(`Failed to create issue: ${err.message}`);
+              }
+            }
+
+            console.log(`Created ${created} new issues.`);
